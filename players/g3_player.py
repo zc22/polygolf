@@ -1,6 +1,6 @@
-import functools
 import logging
 import math
+import random
 from collections import deque
 from typing import Tuple, List, Dict, Optional
 
@@ -10,7 +10,7 @@ from scipy.spatial import KDTree
 
 import constants
 
-SAMPLE_LIMIT = 2000  # approx. count of sampled points
+SAMPLE_LIMIT = 1000  # approx. count of sampled points
 
 RANDOM_COUNT = 50  # repeat times of sampling normal distributions
 EVALUATE_SAMPLE = 20  # checking whether rolling part inside polygon with fixed interval
@@ -223,22 +223,43 @@ class Player:
                                     distance * constants.extra_roll,
                                     angle)
 
-    def simulate(self, candidate: Tuple[float, float], current_position: PointF) -> float:
-        distance, angle = candidate
-        scores = list()
-        for _ in range(RANDOM_COUNT):
-            real_distance = np.random.normal(distance, distance / self.skill)
-            real_angle = angle + np.random.normal(0, 1 / (2 * self.skill))
-            if distance < 20:  # putter
-                scores.append(self.evaluate_putter(current_position, real_distance, real_angle))
-            else:
-                scores.append(self.evaluate(current_position, real_distance, real_angle))
-        valid_scores = list(filter(lambda x: x is not None, scores))
-        if not valid_scores:
-            return float('inf')
-        avg = sum(valid_scores) / len(valid_scores)
-        miss_prob = (RANDOM_COUNT - len(valid_scores)) / RANDOM_COUNT
-        return avg / (1 - miss_prob)
+    def simulate(self, candidates: List[Tuple[float, float]], current_position: PointF) -> Tuple[Tuple[float, float], float]:
+        min_score = float('inf')
+
+        def get_score(scores: List[float]) -> float:
+            n = len(scores)
+            valid_scores = list(filter(lambda x: x is not None, scores))
+            if not valid_scores:
+                return float('inf')
+            avg = sum(valid_scores) / len(valid_scores)
+            miss_prob = (n - len(valid_scores)) / n
+            return avg / (1 - miss_prob)
+
+        def simulate_one(candidate: Tuple[float, float]) -> Optional[float]:
+            distance, angle = candidate
+            scores = list()
+            for counter in range(RANDOM_COUNT):
+                # pruning
+                if counter == RANDOM_COUNT // 5:
+                    if get_score(scores) > min_score * 1.5:
+                        return None
+
+                real_distance = np.random.normal(distance, distance / self.skill)
+                real_angle = angle + np.random.normal(0, 1 / (2 * self.skill))
+                if distance < 20:  # putter
+                    scores.append(self.evaluate_putter(current_position, real_distance, real_angle))
+                else:
+                    scores.append(self.evaluate(current_position, real_distance, real_angle))
+            return get_score(scores)
+
+        res = None
+        for candidate in candidates:
+            v = simulate_one(candidate)
+            if not v or v > min_score:
+                continue
+            min_score = v
+            res = candidate
+        return res, min_score
 
     def play(self, score: int, golf_map: sympy.Polygon, target: sympy.geometry.Point2D,
              curr_loc: sympy.geometry.Point2D, prev_loc: sympy.geometry.Point2D,
@@ -266,10 +287,11 @@ class Player:
             for angle in [2 * math.pi * (i / 36) for i in range(36)] + [
                                 float(sympy.atan2(target.y - curr_loc.y, target.x - curr_loc.x))]
         ]
+        random.shuffle(candidates)
 
-        choice = min(candidates, key=functools.partial(self.simulate, current_position=to_numeric_point(curr_loc)))
+        choice, score = self.simulate(candidates, to_numeric_point(curr_loc))
 
         self.logger.debug(f"last: {to_numeric_point(prev_loc) if prev_loc else prev_loc}, target: {target}")
-        self.logger.debug(f"choice: {choice}, score: {self.simulate(choice, to_numeric_point(curr_loc))}")
+        self.logger.debug(f"choice: {choice}, score: {score}")
 
         return choice
