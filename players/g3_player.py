@@ -189,7 +189,7 @@ class Player:
         # build KD-Tree
         self.kdt = KDTree([(p.x, p.y) for p in self.sampled_points])
 
-        self.logger.debug("max score:", max(self.scores.values()))
+        self.logger.debug(f"max score: {max(self.scores.values())}")
 
     def score(self, p: PointF):
         # return the score of nearest point
@@ -269,7 +269,7 @@ class Player:
 
         choice = min(candidates, key=functools.partial(self.simulate, current_position=to_numeric_point(curr_loc)))
 
-        # print(to_numeric_point(prev_loc) if prev_loc else prev_loc, target)
-        # print(choice, self.simulate(choice, to_numeric_point(curr_loc)))
+        self.logger.debug(f"last: {to_numeric_point(prev_loc) if prev_loc else prev_loc}, target: {target}")
+        self.logger.debug(f"choice: {choice}, score: {self.simulate(choice, to_numeric_point(curr_loc))}")
 
         return choice
