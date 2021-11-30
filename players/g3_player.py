@@ -2,11 +2,12 @@ import logging
 import math
 import random
 from collections import deque
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict, Optional, Deque
 
 import numpy as np
 import sympy
 from scipy.spatial import KDTree
+from shapely.geometry import Polygon, Point, LineString
 
 import constants
 
@@ -18,29 +19,8 @@ EVALUATE_SAMPLE = 20  # checking whether rolling part inside polygon with fixed 
 EPS = 1e-6
 
 
-class PointF:
-    def __init__(self, x, y):
-        self.x = float(x)
-        self.y = float(y)
-
-    def __str__(self):
-        return f"P({self.x}, {self.y})"
-
-    def __repr__(self):
-        return f"PointF({self.x}, {self.y})"
-
-    def __eq__(self, other):
-        return dist(self, other) < EPS
-
-    def __hash__(self):
-        return hash(self.x) ^ hash(self.y)
-
-    def __sub__(self, other):
-        assert type(other) == PointF
-        return PointF(self.x - other.x, self.y - other.y)
-
-
-PolygonF = List[PointF]
+def p2t(p: sympy.Point2D) -> Point:
+    return Point(float(p.x), float(p.y))
 
 
 def sgn(x: float) -> int:
@@ -49,35 +29,35 @@ def sgn(x: float) -> int:
     return 1 if x > 0 else -1
 
 
-def dot(a: PointF, b: PointF) -> float:
+def dot(a: Point, b: Point) -> float:
     return a.x * b.x + a.y * b.y
 
 
-def det(a: PointF, b: PointF) -> float:
+def det(a: Point, b: Point) -> float:
     return a.x * b.y - a.y * b.x
 
 
-def cross(s: PointF, t: PointF, o: PointF = PointF(0, 0)) -> float:
+def cross(s: Point, t: Point, o: Point = Point(0, 0)) -> float:
     return det(s - o, t - o)
 
 
-def to_numeric_point(p: sympy.Point2D) -> PointF:
-    return PointF(p.x, p.y)
+def to_numeric_point(p: sympy.Point2D) -> Point:
+    return Point(p.x, p.y)
 
 
-def dist2(p1: PointF, p2: PointF) -> float:
+def dist2(p1: Point, p2: Point) -> float:
     return (p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2
 
 
-def dist(p1: PointF, p2: PointF = PointF(0, 0)) -> float:
+def dist(p1: Point, p2: Point = Point(0, 0)) -> float:
     return math.sqrt(dist2(p1, p2))
 
 
-def dist_to_line(p: PointF, s: PointF, t: PointF) -> float:
+def dist_to_line(p: Point, s: Point, t: Point) -> float:
     return math.fabs(cross(s, t, p)) / dist(s - t)
 
 
-def dist_to_seg(p: PointF, s: PointF, t: PointF) -> float:
+def dist_to_seg(p: Point, s: Point, t: Point) -> float:
     if s == t:
         return dist(p, s)
     vs = p - s
@@ -89,29 +69,15 @@ def dist_to_seg(p: PointF, s: PointF, t: PointF) -> float:
     return dist_to_line(p, s, t)
 
 
-def point_inside_polygon(poly: PolygonF, p: PointF) -> bool:
-    # http://paulbourke.net/geometry/polygonmesh/#insidepoly
-    n = len(poly)
-    inside = False
-    p1 = poly[0]
-    for i in range(1, n + 1):
-        p2 = poly[i % n]
-        if min(p1.y, p2.y) < p.y <= max(p1.y, p2.y) and p.x <= max(p1.x, p2.x) and p1.x != p2.y:
-            xints = (p.y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y) + p1.x
-            if p1.x == p2.x or p.x <= xints:
-                inside = not inside
-        p1 = p2
-    return inside
-
-
-def sample_points_inside_polygon(poly: sympy.Polygon, poly_f: PolygonF) -> Tuple[float, List[PointF]]:
-    def sample_by_dist(d: float) -> List[PointF]:
+def sample_points_inside_polygon(poly: Polygon) -> Tuple[float, List[Point]]:
+    def sample_by_dist(d: float) -> List[Point]:
         l = list()
         xmin, ymin, xmax, ymax = poly.bounds
+
         for x in np.arange(float(xmin), float(xmax), d):
             for y in np.arange(float(ymin), float(ymax), d):
-                p = PointF(x, y)
-                if point_inside_polygon(poly_f, p):
+                p = Point(x, y)
+                if poly.contains(p):
                     l.append(p)
         return l
 
@@ -142,72 +108,70 @@ class Player:
 
         self.sampled_points = None
         self.sample_dist = None
-        self.scores: Dict[PointF, float] = dict()
+        self.scores = None
 
         self.kdt: KDTree = None
         self.golf_map_f = self.target_f = None
 
-    def calc_scores(self, target: PointF, max_d: float):
+    def calc_scores(self, target: Point, max_d: float):
         # naive BFS
-        max_d2 = max_d ** 2
+        self.sampled_points.append(target)
+        self.scores = [-1 for _ in range(len(self.sampled_points))]
 
-        queue = deque([target])
-        self.scores[target] = 0
+        queue: Deque[int] = deque([len(self.sampled_points) - 1])
+        self.scores[-1] = 0
 
         while queue:
             cur = queue.popleft()
             cur_score = self.scores[cur]
-            for p in self.sampled_points:
-                if p in self.scores or dist2(p, cur) >= max_d2:
+            for i in range(len(self.sampled_points)):
+                if self.scores[i] != -1 or self.sampled_points[cur].distance(self.sampled_points[i]) >= max_d:
                     continue
-                self.scores[p] = cur_score + 1
-                queue.append(p)
+                self.scores[i] = cur_score + 1
+                queue.append(i)
 
     def fix_scores(self):
         # encourage landing near target
-        for k in self.scores.keys():
-            self.scores[k] += dist2(k, self.target_f) / 1e10
+        for i in range(len(self.scores)):
+            self.scores[i] += self.target_f.distance(self.sampled_points[i]) / 1e10
 
     def initialize(self, golf_map: sympy.Polygon, target: sympy.Point2D):
         self.need_initialization = False
 
         # for numeric computation
-        golf_map_f = list()
-        for v in golf_map.vertices:
-            golf_map_f.append(to_numeric_point(v))
-        self.golf_map_f = golf_map_f
-        self.target_f = target_f = to_numeric_point(target)
+        self.golf_map_f = Polygon(map(p2t, golf_map.vertices))
+        self.target_f = p2t(target)
 
         # sample points
-        self.sample_dist, self.sampled_points = sample_points_inside_polygon(golf_map, golf_map_f)
+        self.sample_dist, self.sampled_points = sample_points_inside_polygon(self.golf_map_f)
         self.logger.debug(f"# of sampled points: {len(self.sampled_points)}")
 
         # calculate scores
-        self.calc_scores(target_f, self.max_dist)
+        self.calc_scores(self.target_f, self.max_dist)
         self.fix_scores()
 
         # build KD-Tree
-        self.kdt = KDTree([(p.x, p.y) for p in self.sampled_points])
+        self.kdt = KDTree([(p.x, p.y) for p in self.sampled_points[:-1]])
 
-        self.logger.debug(f"max score: {max(self.scores.values())}")
+        self.logger.debug(f"max score: {max(self.scores)}")
 
-    def score(self, p: PointF):
+    def score(self, p: Point):
         # return the score of nearest point
         d, idx = self.kdt.query([p.x, p.y], k=1)
         if d > self.sample_dist:
             return float('inf')
-        return self.scores.get(self.sampled_points[idx])
+        return self.scores[idx]
 
     @staticmethod
-    def pos(current_position: PointF, distance: float, angle: float) -> PointF:
-        return PointF(current_position.x + distance * math.cos(angle),
-                      current_position.y + distance * math.sin(angle))
+    def pos(current_position: Point, distance: float, angle: float) -> Point:
+        return Point(current_position.x + distance * math.cos(angle),
+                     current_position.y + distance * math.sin(angle))
 
-    def evaluate_putter(self, current_position: PointF, distance: float, angle: float) -> Optional[float]:
+    def evaluate_putter(self, current_position: Point, distance: float, angle: float) -> Optional[float]:
         # boundary check
         for i in range(EVALUATE_SAMPLE + 1):
             position = self.pos(current_position, distance * (i / EVALUATE_SAMPLE), angle)
-            if not point_inside_polygon(self.golf_map_f, position):
+            if not self.golf_map_f.contains(position):
                 return None
 
         end = self.pos(current_position, distance, angle)
@@ -218,12 +182,12 @@ class Player:
 
         return self.score(end)
 
-    def evaluate(self, current_position: PointF, distance: float, angle: float) -> Optional[float]:
+    def evaluate(self, current_position: Point, distance: float, angle: float) -> Optional[float]:
         return self.evaluate_putter(self.pos(current_position, distance, angle),
                                     distance * constants.extra_roll,
                                     angle)
 
-    def simulate(self, candidates: List[Tuple[float, float]], current_position: PointF) -> Tuple[Tuple[float, float], float]:
+    def simulate(self, candidates: List[Tuple[float, float]], current_position: Point) -> Tuple[Tuple[float, float], float]:
         min_score = float('inf')
 
         def get_score(scores: List[float]) -> float:
@@ -281,7 +245,7 @@ class Player:
         if self.need_initialization:
             self.initialize(golf_map, target)
 
-        curr_loc = to_numeric_point(curr_loc)
+        curr_loc = p2t(curr_loc)
 
         candidates = [
             (distance, angle)
@@ -297,7 +261,7 @@ class Player:
         if distance < constants.min_putter_dist:
             return min(distance * 1.1, constants.min_putter_dist), math.atan2(self.target_f.y - curr_loc.y, self.target_f.x - curr_loc.x)
 
-        self.logger.debug(f"last: {to_numeric_point(prev_loc) if prev_loc else prev_loc}, target: {target}")
+        self.logger.debug(f"last: {p2t(prev_loc) if prev_loc else prev_loc}, target: {target}")
         self.logger.debug(f"choice: {choice}, score: {score}")
 
         return choice
